@@ -2,7 +2,6 @@
   "dataSourceId": "f7de0b48-16d6-4321-9402-56a9391166d0",
   "files": [
     "sql/basic/README.md",
-    "sql/basic/char와-varchar-유형의-차이.md",
     "sql/tuning/README.md"
   ]
 }
