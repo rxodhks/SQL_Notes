@@ -1,9 +1,6 @@
 {
   "dataSourceId": "f7de0b48-16d6-4321-9402-56a9391166d0",
   "files": [
-    "assets/3c74a637425a80f38000d9f9d5d7082c/001-위-쿼리를-실행했을-때-나오는-결괏값.png",
-    "assets/3c74a637425a80f38000d9f9d5d7082c/002-두번째-쿼리를-실행했을-때-나오는-결괏값.png",
-    "assets/3c74a637425a80f38000d9f9d5d7082c/003-세번째-쿼리를-실행했을-때-나오는-결괏값.png",
     "sql/basic/README.md",
     "sql/basic/char와-varchar-유형의-차이.md",
     "sql/tuning/README.md"
