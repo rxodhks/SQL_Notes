@@ -9,6 +9,7 @@ const SYNC_DATA_SOURCE_ID =
 const MANIFEST_PATH = ".notion-sync-manifest.json";
 const MIN_NOTION_INTERVAL_MS = 420;
 const MAX_RATE_LIMIT_RETRIES = 8;
+const DELETE_STALE_FILES = process.env.NOTION_SYNC_DELETE_STALE === "true";
 
 if (!NOTION_TOKEN) {
   throw new Error(
@@ -281,6 +282,29 @@ async function listChildren(blockId) {
   }
 }
 
+async function discoverChildPageBlocks(blockId) {
+  const blocks = await listChildren(blockId);
+  const found = [];
+
+  for (const block of blocks) {
+    if (!("type" in block)) continue;
+
+    if (block.type === "child_page") {
+      found.push({
+        id: block.id,
+        title: block.child_page?.title ?? "Untitled",
+      });
+      continue;
+    }
+
+    if (block.has_children) {
+      found.push(...(await discoverChildPageBlocks(block.id)));
+    }
+  }
+
+  return found;
+}
+
 function childBaseDir(filePath) {
   if (path.posix.basename(filePath).toLowerCase() === "readme.md") {
     return path.posix.dirname(filePath);
@@ -288,7 +312,7 @@ function childBaseDir(filePath) {
   return filePath.replace(/\.md$/i, "");
 }
 
-function buildPageTree(
+async function buildPageTree(
   pageId,
   filePath,
   titleHint,
@@ -308,22 +332,40 @@ function buildPageTree(
 
   const nextAncestry = new Set(ancestry);
   nextAncestry.add(idKey);
-  const usedSlugs = new Set();
   const baseDir = childBaseDir(filePath);
+  const usedSlugs = new Set();
+  const childCandidates = new Map();
 
   for (const childPage of childrenByParent.get(idKey) ?? []) {
-    const childKey = canonicalId(childPage.id);
-    const childTitle = pageTitle(childPage);
-    let slug = slugify(childTitle, childKey.slice(0, 8));
+    childCandidates.set(canonicalId(childPage.id), {
+      id: childPage.id,
+      title: pageTitle(childPage),
+    });
+  }
+
+  for (const child of await discoverChildPageBlocks(pageId)) {
+    const childKey = canonicalId(child.id);
+    if (!childCandidates.has(childKey)) {
+      childCandidates.set(childKey, child);
+    }
+  }
+
+  const children = [...childCandidates.values()].sort((a, b) =>
+    a.title.localeCompare(b.title, "ko"),
+  );
+
+  for (const child of children) {
+    const childKey = canonicalId(child.id);
+    let slug = slugify(child.title, childKey.slice(0, 8));
     if (usedSlugs.has(slug)) slug = `${slug}-${childKey.slice(0, 6)}`;
     usedSlugs.add(slug);
 
     const childFilePath = safeRepoPath(path.posix.join(baseDir, `${slug}.md`));
     node.children.push(
-      buildPageTree(
-        childPage.id,
+      await buildPageTree(
+        child.id,
         childFilePath,
-        childTitle,
+        child.title,
         pageIndex,
         childrenByParent,
         nextAncestry,
@@ -631,6 +673,11 @@ async function readPreviousManifestFiles() {
 }
 
 async function removeStaleGeneratedFiles(previousFiles) {
+  if (!DELETE_STALE_FILES) {
+    console.log("Stale-file deletion is disabled for safety.");
+    return;
+  }
+
   for (const file of previousFiles) {
     if (generatedFiles.has(file)) continue;
     try {
@@ -659,19 +706,21 @@ async function main() {
   const { pageIndex, childrenByParent } = buildPageIndexes(accessiblePages);
   await ensureRootPages(roots, pageIndex);
 
-  const rootNodes = roots.map((root) => {
+  const rootNodes = [];
+  for (const root of roots) {
     console.log(`Discovering: ${root.name} -> ${root.filePath}`);
-    return buildPageTree(
-      root.pageId,
-      root.filePath,
-      root.name,
-      pageIndex,
-      childrenByParent,
+    rootNodes.push(
+      await buildPageTree(
+        root.pageId,
+        root.filePath,
+        root.name,
+        pageIndex,
+        childrenByParent,
+      ),
     );
-  });
+  }
 
-  const discoveredPageCount = pageById.size;
-  console.log(`Discovered ${discoveredPageCount} Notion page(s) under published roots.`);
+  console.log(`Discovered ${pageById.size} Notion page(s) under published roots.`);
 
   for (const node of rootNodes) {
     console.log(`Rendering: ${node.title}`);
