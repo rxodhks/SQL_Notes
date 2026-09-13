@@ -567,4 +567,4 @@ DBMS에서 수행되는 **SQL이 모두 완성된 SQL은 아니며,**
 > 
 > 이 주소 값에 따라 **앞 또는 뒤로 순차적으로 스캔하는 방식이 시퀀셜 액세스**이다.
 > 
-> ![Notion image](../../assets/3c74a637425a80f38000d9f9d5d7082c/010-notion-image.png)
+> ![EMP_PK 인덱스의 리프 노드에 그어진 굵은 화살표가 시퀀셜 액세스에 해](../../assets/3c74a637425a80f38000d9f9d5d7082c/010-emp_pk-%EC%9D%B8%EB%8D%B1%EC%8A%A4%EC%9D%98-%EB%A6%AC%ED%94%84-%EB%85%B8%EB%93%9C%EC%97%90-%EA%B7%B8%EC%96%B4%EC%A7%84-%EA%B5%B5%EC%9D%80-%ED%99%94%EC%82%B4%ED%91%9C%EA%B0%80-%EC%8B%9C%ED%80%80%EC%85%9C-%EC%95%A1%EC%84%B8%EC%8A%A4%EC%97%90-%ED%95%B4.png)

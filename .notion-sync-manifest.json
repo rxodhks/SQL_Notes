@@ -14,6 +14,7 @@
     "assets/3c74a637425a80f38000d9f9d5d7082c/007-물리적-데이터-파일과-논리적-익스텐트-블록의-배치-관계-데이터파일은-서로-다른-데이터파일.png",
     "assets/3c74a637425a80f38000d9f9d5d7082c/008-테이블스페이스-erd.png",
     "assets/3c74a637425a80f38000d9f9d5d7082c/009-notion-image.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/010-emp_pk-인덱스의-리프-노드에-그어진-굵은-화살표가-시퀀셜-액세스에-해.png",
     "assets/3c74a637425a80f38000d9f9d5d7082c/010-notion-image.png",
     "sql/basic/README.md",
     "sql/basic/char와-varchar-유형의-차이.md",
@@ -35,7 +36,7 @@
     {
       "id": "3c74a637425a80f38000d9f9d5d7082c",
       "file": "sql/tuning/README.md",
-      "bytes": 23009,
+      "bytes": 23327,
       "images": 10
     }
   ],
