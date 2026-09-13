@@ -7,6 +7,8 @@ const SYNC_DATA_SOURCE_ID =
   process.env.NOTION_SYNC_DATA_SOURCE_ID ??
   "f7de0b48-16d6-4321-9402-56a9391166d0";
 const MANIFEST_PATH = ".notion-sync-manifest.json";
+const MIN_NOTION_INTERVAL_MS = 420;
+const MAX_RATE_LIMIT_RETRIES = 8;
 
 if (!NOTION_TOKEN) {
   throw new Error(
@@ -21,9 +23,56 @@ const notion = new Client({
 
 const generatedFiles = new Set();
 const pageById = new Map();
+const blockChildrenCache = new Map();
+const pageTitleCache = new Map();
+let lastNotionRequestAt = 0;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function canonicalId(id) {
   return String(id ?? "").replaceAll("-", "").toLowerCase();
+}
+
+function isRateLimitError(error) {
+  return (
+    error?.code === "rate_limited" ||
+    error?.status === 429 ||
+    error?.statusCode === 429 ||
+    error?.body?.code === "rate_limited"
+  );
+}
+
+async function notionRequest(label, request) {
+  for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt += 1) {
+    const waitFor = Math.max(
+      0,
+      MIN_NOTION_INTERVAL_MS - (Date.now() - lastNotionRequestAt),
+    );
+    if (waitFor > 0) await sleep(waitFor);
+    lastNotionRequestAt = Date.now();
+
+    try {
+      return await request();
+    } catch (error) {
+      if (!isRateLimitError(error) || attempt === MAX_RATE_LIMIT_RETRIES) {
+        throw error;
+      }
+
+      const retryAfterSeconds = Number(
+        error?.headers?.["retry-after"] ?? error?.headers?.get?.("retry-after"),
+      );
+      const backoff = Number.isFinite(retryAfterSeconds)
+        ? retryAfterSeconds * 1000
+        : Math.min(1500 * 2 ** attempt, 30000);
+
+      console.warn(
+        `${label}: Notion rate limit. Retrying in ${Math.ceil(backoff / 1000)}s (attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}).`,
+      );
+      await sleep(backoff);
+    }
+  }
+
+  throw new Error(`${label}: retry loop ended unexpectedly.`);
 }
 
 function propertyText(property) {
@@ -45,12 +94,13 @@ function propertyUrl(property) {
 
 function extractPageId(value) {
   if (!value) return null;
-  const compact = String(value).match(/[0-9a-f]{32}/i)?.[0];
-  if (compact) return compact;
-  const dashed = String(value).match(
-    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
-  )?.[0];
-  return dashed ?? null;
+  return (
+    String(value).match(/[0-9a-f]{32}/i)?.[0] ??
+    String(value).match(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+    )?.[0] ??
+    null
+  );
 }
 
 function safeRepoPath(value) {
@@ -85,14 +135,16 @@ async function queryPublishedRoots() {
   let startCursor;
 
   do {
-    const response = await notion.dataSources.query({
-      data_source_id: SYNC_DATA_SOURCE_ID,
-      filter: {
-        property: "게시",
-        checkbox: { equals: true },
-      },
-      ...(startCursor ? { start_cursor: startCursor } : {}),
-    });
+    const response = await notionRequest("Query sync database", () =>
+      notion.dataSources.query({
+        data_source_id: SYNC_DATA_SOURCE_ID,
+        filter: {
+          property: "게시",
+          checkbox: { equals: true },
+        },
+        ...(startCursor ? { start_cursor: startCursor } : {}),
+      }),
+    );
 
     rows.push(...response.results);
     startCursor = response.has_more ? response.next_cursor : undefined;
@@ -132,33 +184,57 @@ async function queryPublishedRoots() {
 }
 
 async function listChildren(blockId) {
-  const results = [];
-  let startCursor;
+  const key = canonicalId(blockId);
+  if (blockChildrenCache.has(key)) return blockChildrenCache.get(key);
 
-  do {
-    const response = await notion.blocks.children.list({
-      block_id: blockId,
-      page_size: 100,
-      ...(startCursor ? { start_cursor: startCursor } : {}),
-    });
-    results.push(...response.results);
-    startCursor = response.has_more ? response.next_cursor : undefined;
-  } while (startCursor);
+  const pending = (async () => {
+    const results = [];
+    let startCursor;
 
-  return results;
+    do {
+      const response = await notionRequest(`Read block ${blockId}`, () =>
+        notion.blocks.children.list({
+          block_id: blockId,
+          page_size: 100,
+          ...(startCursor ? { start_cursor: startCursor } : {}),
+        }),
+      );
+      results.push(...response.results);
+      startCursor = response.has_more ? response.next_cursor : undefined;
+    } while (startCursor);
+
+    return results;
+  })();
+
+  blockChildrenCache.set(key, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    blockChildrenCache.delete(key);
+    throw error;
+  }
 }
 
 async function getPageTitle(pageId, fallback = "Untitled") {
-  const page = await notion.pages.retrieve({ page_id: pageId });
-  if (page.object !== "page" || !("properties" in page)) return fallback;
+  const key = canonicalId(pageId);
+  if (pageTitleCache.has(key)) return pageTitleCache.get(key);
 
-  for (const property of Object.values(page.properties)) {
-    if (property?.type === "title") {
-      const title = propertyText(property);
-      if (title) return title;
+  const page = await notionRequest(`Read page ${pageId}`, () =>
+    notion.pages.retrieve({ page_id: pageId }),
+  );
+  let title = fallback;
+
+  if (page.object === "page" && "properties" in page) {
+    for (const property of Object.values(page.properties)) {
+      if (property?.type === "title") {
+        title = propertyText(property) || fallback;
+        break;
+      }
     }
   }
-  return fallback;
+
+  pageTitleCache.set(key, title);
+  return title;
 }
 
 async function findChildPages(blockId) {
@@ -174,11 +250,7 @@ async function findChildPages(blockId) {
     }
 
     if (block.has_children) {
-      try {
-        found.push(...(await findChildPages(block.id)));
-      } catch (error) {
-        console.warn(`Could not inspect children of block ${block.id}: ${error.message}`);
-      }
+      found.push(...(await findChildPages(block.id)));
     }
   }
 
@@ -192,19 +264,22 @@ function childBaseDir(filePath) {
   return filePath.replace(/\.md$/i, "");
 }
 
-async function buildPageTree(pageId, filePath, titleHint, ancestry = new Set()) {
+async function buildPageTree(
+  pageId,
+  filePath,
+  titleHint,
+  ancestry = new Set(),
+  retrieveTitle = true,
+) {
   const idKey = canonicalId(pageId);
   if (ancestry.has(idKey)) {
     throw new Error(`Cycle detected while traversing Notion page ${pageId}`);
   }
 
-  const title = await getPageTitle(pageId, titleHint);
-  const node = {
-    id: pageId,
-    title,
-    filePath,
-    children: [],
-  };
+  const title = retrieveTitle
+    ? await getPageTitle(pageId, titleHint)
+    : titleHint || "Untitled";
+  const node = { id: pageId, title, filePath, children: [] };
   pageById.set(idKey, node);
 
   const nextAncestry = new Set(ancestry);
@@ -220,7 +295,7 @@ async function buildPageTree(pageId, filePath, titleHint, ancestry = new Set()) 
     if (seen.has(childKey)) continue;
     seen.add(childKey);
 
-    const childTitle = await getPageTitle(child.id, child.title);
+    const childTitle = child.title || "Untitled";
     let slug = slugify(childTitle, childKey.slice(0, 8));
     if (usedSlugs.has(slug)) slug = `${slug}-${childKey.slice(0, 6)}`;
     usedSlugs.add(slug);
@@ -231,6 +306,7 @@ async function buildPageTree(pageId, filePath, titleHint, ancestry = new Set()) 
       childFilePath,
       childTitle,
       nextAncestry,
+      false,
     );
     node.children.push(childNode);
   }
@@ -264,7 +340,6 @@ function richTextToMarkdown(items = []) {
       if (annotations.bold) text = `**${text}**`;
       if (annotations.italic) text = `*${text}*`;
       if (annotations.strikethrough) text = `~~${text}~~`;
-
       return text;
     })
     .join("");
@@ -303,7 +378,7 @@ function mimeExtension(contentType, sourceUrl) {
     const ext = path.posix.extname(new URL(sourceUrl).pathname).toLowerCase();
     if (/^\.[a-z0-9]{1,6}$/.test(ext)) return ext;
   } catch {
-    // Ignore malformed URL and use a generic extension.
+    // Use generic extension below.
   }
   return ".bin";
 }
@@ -323,8 +398,7 @@ async function downloadImage(sourceUrl, pageId, index, caption) {
     );
 
     await fs.mkdir(path.dirname(assetPath), { recursive: true });
-    const buffer = Buffer.from(await response.arrayBuffer());
-    await fs.writeFile(assetPath, buffer);
+    await fs.writeFile(assetPath, Buffer.from(await response.arrayBuffer()));
     generatedFiles.add(assetPath);
     return assetPath;
   } catch (error) {
@@ -342,8 +416,7 @@ function fileLikeUrl(value) {
 
 async function renderNestedChildren(block, currentFile, pageNode, state) {
   if (!block.has_children) return "";
-  const children = await listChildren(block.id);
-  return renderBlocks(children, currentFile, pageNode, state);
+  return renderBlocks(await listChildren(block.id), currentFile, pageNode, state);
 }
 
 async function renderBlock(block, currentFile, pageNode, state) {
@@ -427,9 +500,7 @@ async function renderBlock(block, currentFile, pageNode, state) {
         state.imageIndex,
         caption,
       );
-      const target = localAsset
-        ? relativeLink(currentFile, localAsset)
-        : sourceUrl;
+      const target = localAsset ? relativeLink(currentFile, localAsset) : sourceUrl;
       return `![${escapeInline(caption)}](${target})`;
     }
     case "bookmark": {
@@ -453,11 +524,12 @@ async function renderBlock(block, currentFile, pageNode, state) {
       return `- [${escapeInline(target.title)}](${relativeLink(currentFile, target.filePath)})`;
     }
     case "table": {
-      const rows = await listChildren(block.id);
-      const tableRows = rows.filter((row) => row.type === "table_row");
-      if (tableRows.length === 0) return "";
+      const rows = (await listChildren(block.id)).filter(
+        (row) => row.type === "table_row",
+      );
+      if (rows.length === 0) return "";
 
-      const renderedRows = tableRows.map((row) =>
+      const renderedRows = rows.map((row) =>
         row.table_row.cells.map((cell) => richTextToMarkdown(cell)),
       );
       const width = Math.max(...renderedRows.map((row) => row.length));
@@ -465,9 +537,10 @@ async function renderBlock(block, currentFile, pageNode, state) {
         ...row,
         ...Array(Math.max(0, width - row.length)).fill(""),
       ];
-      const lines = [];
-      lines.push(`| ${normalize(renderedRows[0]).join(" | ")} |`);
-      lines.push(`| ${Array(width).fill("---").join(" | ")} |`);
+      const lines = [
+        `| ${normalize(renderedRows[0]).join(" | ")} |`,
+        `| ${Array(width).fill("---").join(" | ")} |`,
+      ];
       for (const row of renderedRows.slice(1)) {
         lines.push(`| ${normalize(row).join(" | ")} |`);
       }
@@ -511,9 +584,12 @@ async function renderPage(pageNode) {
     `# ${pageNode.title}`,
   ].join("\n");
 
-  const content = body ? `${header}\n\n${body}\n` : `${header}\n`;
   await fs.mkdir(path.dirname(pageNode.filePath), { recursive: true });
-  await fs.writeFile(pageNode.filePath, content, "utf8");
+  await fs.writeFile(
+    pageNode.filePath,
+    body ? `${header}\n\n${body}\n` : `${header}\n`,
+    "utf8",
+  );
   generatedFiles.add(pageNode.filePath);
 
   for (const child of pageNode.children) {
@@ -521,21 +597,26 @@ async function renderPage(pageNode) {
   }
 }
 
-async function removePreviouslyGeneratedFiles() {
+async function readPreviousManifestFiles() {
   try {
     const raw = await fs.readFile(MANIFEST_PATH, "utf8");
     const manifest = JSON.parse(raw);
-    for (const file of manifest.files ?? []) {
-      try {
-        const safePath = safeRepoPath(file);
-        await fs.rm(safePath, { force: true });
-      } catch (error) {
-        console.warn(`Could not remove stale generated file '${file}': ${error.message}`);
-      }
-    }
+    return new Set((manifest.files ?? []).map(safeRepoPath));
   } catch (error) {
     if (error.code !== "ENOENT") {
       console.warn(`Could not read old sync manifest: ${error.message}`);
+    }
+    return new Set();
+  }
+}
+
+async function removeStaleGeneratedFiles(previousFiles) {
+  for (const file of previousFiles) {
+    if (generatedFiles.has(file)) continue;
+    try {
+      await fs.rm(file, { force: true });
+    } catch (error) {
+      console.warn(`Could not remove stale generated file '${file}': ${error.message}`);
     }
   }
 }
@@ -550,15 +631,15 @@ async function writeManifest() {
 
 async function main() {
   console.log("Reading published roots from Notion...");
+  const previousFiles = await readPreviousManifestFiles();
   const roots = await queryPublishedRoots();
-
-  await removePreviouslyGeneratedFiles();
 
   const rootNodes = [];
   for (const root of roots) {
     console.log(`Discovering: ${root.name} -> ${root.filePath}`);
-    const node = await buildPageTree(root.pageId, root.filePath, root.name);
-    rootNodes.push(node);
+    rootNodes.push(
+      await buildPageTree(root.pageId, root.filePath, root.name),
+    );
   }
 
   for (const node of rootNodes) {
@@ -566,11 +647,13 @@ async function main() {
     await renderPage(node);
   }
 
+  await removeStaleGeneratedFiles(previousFiles);
   await writeManifest();
   console.log(`Sync complete. Generated ${generatedFiles.size} file(s).`);
 }
 
 main().catch((error) => {
+  console.error("Notion sync failed. No commit will be created.");
   console.error(error);
   process.exitCode = 1;
 });
