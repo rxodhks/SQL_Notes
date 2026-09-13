@@ -11,6 +11,7 @@ on:
       - ".github/workflows/notion-sync.yml"
       - "scripts/sync-notion.mjs"
       - "scripts/sync-notion.test.mjs"
+      - "scripts/notion-recovery.json"
       - "package.json"
       - "package-lock.json"
 

@@ -30,3 +30,13 @@ test('large loss blocks publication; additions pass', () => {
   assert.throws(()=>assertSafeReplacement('a'.repeat(1000),'a'.repeat(100),'note'),/shrank/);
   assert.doesNotThrow(()=>assertSafeReplacement('a'.repeat(1000),'a'.repeat(1200),'note'));
 });
+test('verified recovery copy fills empty REST callout; live children win', async () => {
+  const id='3da4a637425a8025b3f7eb964d60bae7';
+  const block={id,type:'callout',has_children:false,callout:{rich_text:rich('summary')}};
+  blockChildrenCache.set(id,Promise.resolve([]));
+  assert.match(await renderBlock(block,'sql/tuning/README.md',{},{}),/데이터를 읽고 쓰는 단위/);
+  blockChildrenCache.set(id,Promise.resolve([{id:'live',type:'paragraph',paragraph:{rich_text:rich('live content')}}]));
+  const output=await renderBlock(block,'sql/tuning/README.md',{},{});
+  assert.match(output,/live content/);
+  assert.ok(!output.includes('데이터를 읽고 쓰는 단위'));
+});

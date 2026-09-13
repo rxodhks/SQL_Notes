@@ -26,6 +26,8 @@ const generatedFiles = new Set();
 const pendingFiles = new Map();
 const renderedIds = new Set();
 const pageStats = [];
+const recoveryCopies = JSON.parse(await fs.readFile(new URL('./notion-recovery.json', import.meta.url), 'utf8'));
+const recoveryUsed = new Set();
 const pageById = new Map();
 const blockChildrenCache = new Map();
 let lastNotionRequestAt = 0;
@@ -497,6 +499,12 @@ async function renderNestedChildren(block, currentFile, pageNode, state) {
   if (!block.has_children && block.type !== "callout") return "";
   const children = await listChildren(block.id);
   if (block.type === "callout") console.log(`Callout ${block.id}: advertised=${block.has_children}, children=${children.length}`);
+  const recovery = recoveryCopies[canonicalId(block.id)];
+  if (recovery && children.length === 0) {
+    recoveryUsed.add(block.id);
+    console.warn(`Using verified Notion recovery copy for ${block.id}; REST API returned no children.`);
+    return recovery.markdown;
+  }
   return renderBlocks(children, currentFile, pageNode, state);
 }
 
@@ -710,7 +718,7 @@ async function validateAndPublish(previousFiles) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, content);
   }
-  const manifest = { dataSourceId: SYNC_DATA_SOURCE_ID, files: [...new Set([...previousFiles, ...generatedFiles])].sort(), pages: pageStats, renderedBlocks: renderedIds.size };
+  const manifest = { dataSourceId: SYNC_DATA_SOURCE_ID, files: [...new Set([...previousFiles, ...generatedFiles])].sort(), pages: pageStats, renderedBlocks: renderedIds.size, recoveryCopiesUsed: [...recoveryUsed] };
   await fs.writeFile(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(JSON.stringify({ verifiedPages: pageStats, renderedBlocks: renderedIds.size }));
 }
