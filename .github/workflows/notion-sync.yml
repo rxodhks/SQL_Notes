@@ -10,7 +10,9 @@ on:
     paths:
       - ".github/workflows/notion-sync.yml"
       - "scripts/sync-notion.mjs"
+      - "scripts/sync-notion.test.mjs"
       - "package.json"
+      - "package-lock.json"
 
 permissions:
   contents: write
@@ -22,6 +24,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -33,7 +36,10 @@ jobs:
           node-version: 24
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund --package-lock=false
+        run: npm ci --no-audit --no-fund
+
+      - name: Test exporter safety
+        run: node --test scripts/sync-notion.test.mjs
 
       - name: Sync Notion pages
         run: npm run sync
@@ -43,6 +49,9 @@ jobs:
 
       - name: Commit synced notes
         run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || { echo "Source branch changed; rerun sync."; exit 1; }
           git config user.name "notion-sync[bot]"
           git config user.email "notion-sync[bot]@users.noreply.github.com"
 

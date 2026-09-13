@@ -1,6 +1,7 @@
 import { Client } from "@notionhq/client";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const NOTION_TOKEN = process.env.NOTION_TOKEN;
 const SYNC_DATA_SOURCE_ID =
@@ -9,9 +10,8 @@ const SYNC_DATA_SOURCE_ID =
 const MANIFEST_PATH = ".notion-sync-manifest.json";
 const MIN_NOTION_INTERVAL_MS = 420;
 const MAX_RATE_LIMIT_RETRIES = 8;
-const DELETE_STALE_FILES = process.env.NOTION_SYNC_DELETE_STALE === "true";
 
-if (!NOTION_TOKEN) {
+if (!NOTION_TOKEN && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   throw new Error(
     "NOTION_TOKEN is missing. Add it as a GitHub Actions repository secret.",
   );
@@ -23,6 +23,9 @@ const notion = new Client({
 });
 
 const generatedFiles = new Set();
+const pendingFiles = new Map();
+const renderedIds = new Set();
+const pageStats = [];
 const pageById = new Map();
 const blockChildrenCache = new Map();
 let lastNotionRequestAt = 0;
@@ -121,7 +124,9 @@ function safeRepoPath(value) {
     normalized === "." ||
     normalized.startsWith("/") ||
     normalized === ".." ||
-    normalized.startsWith("../")
+    normalized.startsWith("../") ||
+    !/^(sql\/(basic|tuning)\/|assets\/)/.test(normalized) ||
+    normalized.includes(":")
   ) {
     throw new Error(`Unsafe GitHub Path: ${value}`);
   }
@@ -158,6 +163,9 @@ async function queryPublishedRoots() {
     );
 
     rows.push(...response.results);
+    if (response.has_more && (!response.next_cursor || response.next_cursor === startCursor)) {
+      throw new Error("Invalid pagination cursor; refusing incomplete export");
+    }
     startCursor = response.has_more ? response.next_cursor : undefined;
   } while (startCursor);
 
@@ -171,8 +179,8 @@ async function queryPublishedRoots() {
       const outputPath = propertyText(row.properties["GitHub Path"]);
 
       if (!pageId || !outputPath) {
-        console.warn(
-          `Skipping sync row '${name || row.id}': 원본 페이지 or GitHub Path is missing.`,
+        throw new Error(
+          `Invalid sync row '${name || row.id}': 원본 페이지 or GitHub Path is missing.`,
         );
         return null;
       }
@@ -209,6 +217,9 @@ async function listAccessiblePages() {
 
     for (const item of response.results) {
       if (item.object === "page") pages.push(item);
+    }
+    if (response.has_more && (!response.next_cursor || response.next_cursor === startCursor)) {
+      throw new Error("Invalid pagination cursor; refusing incomplete export");
     }
     startCursor = response.has_more ? response.next_cursor : undefined;
   } while (startCursor);
@@ -267,7 +278,10 @@ async function listChildren(blockId) {
         }),
       );
       results.push(...response.results);
-      startCursor = response.has_more ? response.next_cursor : undefined;
+      if (response.has_more && (!response.next_cursor || response.next_cursor === startCursor)) {
+      throw new Error("Invalid pagination cursor; refusing incomplete export");
+    }
+    startCursor = response.has_more ? response.next_cursor : undefined;
     } while (startCursor);
 
     return results;
@@ -328,6 +342,9 @@ async function buildPageTree(
   const page = pageIndex.get(idKey);
   const title = pageTitle(page, titleHint || "Untitled");
   const node = { id: pageId, title, filePath, children: [] };
+  if (pageById.has(idKey) || [...pageById.values()].some(p => p.filePath.toLowerCase() === filePath.toLowerCase())) {
+    throw new Error(`Duplicate page or output path: ${filePath}`);
+  }
   pageById.set(idKey, node);
 
   const nextAncestry = new Set(ancestry);
@@ -459,13 +476,11 @@ async function downloadImage(sourceUrl, pageId, index, caption) {
       path.posix.join("assets", canonicalId(pageId), assetName),
     );
 
-    await fs.mkdir(path.dirname(assetPath), { recursive: true });
-    await fs.writeFile(assetPath, Buffer.from(await response.arrayBuffer()));
+    pendingFiles.set(assetPath, Buffer.from(await response.arrayBuffer()));
     generatedFiles.add(assetPath);
     return assetPath;
   } catch (error) {
-    console.warn(`Image download failed; keeping original URL: ${error.message}`);
-    return null;
+    throw new Error(`Image download failed: ${error.message}`);
   }
 }
 
@@ -482,7 +497,8 @@ async function renderNestedChildren(block, currentFile, pageNode, state) {
 }
 
 async function renderBlock(block, currentFile, pageNode, state) {
-  if (!("type" in block)) return "";
+  if (!("type" in block)) throw new Error("Incomplete block response");
+  renderedIds.add(canonicalId(block.id));
   const value = block[block.type];
 
   switch (block.type) {
@@ -492,13 +508,13 @@ async function renderBlock(block, currentFile, pageNode, state) {
       return [own, nested].filter(Boolean).join("\n\n");
     }
     case "heading_1":
-      return `# ${richTextToMarkdown(value.rich_text)}`;
     case "heading_2":
-      return `## ${richTextToMarkdown(value.rich_text)}`;
     case "heading_3":
-      return `### ${richTextToMarkdown(value.rich_text)}`;
-    case "heading_4":
-      return `#### ${richTextToMarkdown(value.rich_text)}`;
+    case "heading_4": {
+      const own = `${"#".repeat(Number(block.type.slice(-1)))} ${richTextToMarkdown(value.rich_text)}`;
+      const nested = await renderNestedChildren(block, currentFile, pageNode, state);
+      return [own, nested].filter(Boolean).join("\n\n");
+    }
     case "bulleted_list_item": {
       const own = `- ${richTextToMarkdown(value.rich_text)}`;
       const nested = await renderNestedChildren(block, currentFile, pageNode, state);
@@ -553,7 +569,7 @@ async function renderBlock(block, currentFile, pageNode, state) {
     case "image": {
       const sourceUrl = fileLikeUrl(value);
       const caption = plainRichText(value.caption) || "Notion image";
-      if (!sourceUrl) return "";
+      if (!sourceUrl) throw new Error(`Missing image URL: ${block.id}`);
 
       state.imageIndex += 1;
       const localAsset = await downloadImage(
@@ -591,6 +607,7 @@ async function renderBlock(block, currentFile, pageNode, state) {
       );
       if (rows.length === 0) return "";
 
+      rows.forEach(row => renderedIds.add(canonicalId(row.id)));
       const renderedRows = rows.map((row) =>
         row.table_row.cells.map((cell) => richTextToMarkdown(cell)),
       );
@@ -616,14 +633,9 @@ async function renderBlock(block, currentFile, pageNode, state) {
     case "table_of_contents":
       return "";
     case "child_database":
-      return `> Notion child database **${escapeInline(value.title ?? "Database")}** is not exported.`;
-    default: {
-      if (block.has_children) {
-        return renderNestedChildren(block, currentFile, pageNode, state);
-      }
-      console.warn(`Unsupported Notion block type: ${block.type}`);
-      return "";
-    }
+      throw new Error(`Child database requires an explicit exporter: ${block.id}`);
+    default:
+      throw new Error(`Unsupported Notion block type: ${block.type} (${block.id})`);
   }
 }
 
@@ -646,12 +658,9 @@ async function renderPage(pageNode) {
     `# ${pageNode.title}`,
   ].join("\n");
 
-  await fs.mkdir(path.dirname(pageNode.filePath), { recursive: true });
-  await fs.writeFile(
-    pageNode.filePath,
-    body ? `${header}\n\n${body}\n` : `${header}\n`,
-    "utf8",
-  );
+  const content = body ? `${header}\n\n${body}\n` : `${header}\n`;
+  pendingFiles.set(pageNode.filePath, content);
+  pageStats.push({ id: pageNode.id, file: pageNode.filePath, bytes: Buffer.byteLength(content), images: state.imageIndex });
   generatedFiles.add(pageNode.filePath);
 
   for (const child of pageNode.children) {
@@ -666,35 +675,43 @@ async function readPreviousManifestFiles() {
     return new Set((manifest.files ?? []).map(safeRepoPath));
   } catch (error) {
     if (error.code !== "ENOENT") {
-      console.warn(`Could not read old sync manifest: ${error.message}`);
+      throw error;
     }
     return new Set();
   }
 }
 
-async function removeStaleGeneratedFiles(previousFiles) {
-  if (!DELETE_STALE_FILES) {
-    console.log("Stale-file deletion is disabled for safety.");
-    return;
+export function assertSafeReplacement(previous, next, file) {
+  if (previous.length > 200 && Buffer.byteLength(next) < Buffer.byteLength(previous) * 0.8) {
+    throw new Error(`Content shrank by more than 20%: ${file}. Review source changes before publishing.`);
   }
+}
 
+async function validateAndPublish(previousFiles) {
   for (const file of previousFiles) {
-    if (generatedFiles.has(file)) continue;
-    try {
-      await fs.rm(file, { force: true });
-    } catch (error) {
-      console.warn(`Could not remove stale generated file '${file}': ${error.message}`);
+    if (file.endsWith(".md") && !generatedFiles.has(file)) throw new Error(`Previously exported page missing: ${file}`);
+  }
+  for (const pending of blockChildrenCache.values()) {
+    for (const block of await pending) {
+      if (!renderedIds.has(canonicalId(block.id))) throw new Error(`Fetched block was not rendered: ${block.id} (${block.type})`);
     }
   }
+  for (const [file, content] of pendingFiles) {
+    if (!file.endsWith(".md")) continue;
+    try { assertSafeReplacement(await fs.readFile(file, "utf8"), content, file); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  // No repository output is touched until every source and safety check passes.
+  for (const [file, content] of pendingFiles) {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, content);
+  }
+  const manifest = { dataSourceId: SYNC_DATA_SOURCE_ID, files: [...new Set([...previousFiles, ...generatedFiles])].sort(), pages: pageStats, renderedBlocks: renderedIds.size };
+  await fs.writeFile(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
+  console.log(JSON.stringify({ verifiedPages: pageStats, renderedBlocks: renderedIds.size }));
 }
 
-async function writeManifest() {
-  const manifest = {
-    dataSourceId: SYNC_DATA_SOURCE_ID,
-    files: [...generatedFiles].sort(),
-  };
-  await fs.writeFile(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-}
+export { renderBlock, blockChildrenCache, renderedIds };
 
 async function main() {
   console.log("Reading published roots from Notion...");
@@ -727,12 +744,11 @@ async function main() {
     await renderPage(node);
   }
 
-  await removeStaleGeneratedFiles(previousFiles);
-  await writeManifest();
+  await validateAndPublish(previousFiles);
   console.log(`Sync complete. Generated ${generatedFiles.size} file(s).`);
 }
 
-main().catch((error) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error) => {
   console.error("Notion sync failed. No commit will be created.");
   console.error(error);
   process.exitCode = 1;
