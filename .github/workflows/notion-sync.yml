@@ -1,0 +1,48 @@
+name: Sync Notion SQL Notes
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: notion-sql-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Sync Notion pages
+        run: npm run sync
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_SYNC_DATA_SOURCE_ID: f7de0b48-16d6-4321-9402-56a9391166d0
+
+      - name: Commit synced notes
+        run: |
+          git config user.name "notion-sync[bot]"
+          git config user.email "notion-sync[bot]@users.noreply.github.com"
+          git add sql assets .notion-sync-manifest.json
+          if git diff --cached --quiet; then
+            echo "No Notion changes to commit."
+            exit 0
+          fi
+          git commit -m "docs: sync Notion SQL notes"
+          git push
