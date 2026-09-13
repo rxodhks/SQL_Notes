@@ -1,8 +1,43 @@
 {
   "dataSourceId": "f7de0b48-16d6-4321-9402-56a9391166d0",
   "files": [
+    "assets/2ef4a637425a805a9633ef5acb0f9677/001-notion-image.png",
+    "assets/2ef4a637425a805a9633ef5acb0f9677/002-notion-image.png",
+    "assets/2ef4a637425a805a9633ef5acb0f9677/003-notion-image.png",
+    "assets/2ef4a637425a805a9633ef5acb0f9677/004-notion-image.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/001-위-쿼리를-실행했을-때-나오는-결괏값.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/002-두번째-쿼리를-실행했을-때-나오는-결괏값.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/003-세번째-쿼리를-실행했을-때-나오는-결괏값.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/004-notion-image.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/005-프로세스-생명주기에-관한-사진.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/006-테이블스페이스의-구조.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/007-물리적-데이터-파일과-논리적-익스텐트-블록의-배치-관계-데이터파일은-서로-다른-데이터파일.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/008-테이블스페이스-erd.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/009-notion-image.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/010-notion-image.png",
     "sql/basic/README.md",
     "sql/basic/char와-varchar-유형의-차이.md",
     "sql/tuning/README.md"
-  ]
+  ],
+  "pages": [
+    {
+      "id": "2ef4a637425a805a9633ef5acb0f9677",
+      "file": "sql/basic/README.md",
+      "bytes": 98368,
+      "images": 4
+    },
+    {
+      "id": "3314a637-425a-8065-8461-d2fcd488cfeb",
+      "file": "sql/basic/char와-varchar-유형의-차이.md",
+      "bytes": 1279,
+      "images": 0
+    },
+    {
+      "id": "3c74a637425a80f38000d9f9d5d7082c",
+      "file": "sql/tuning/README.md",
+      "bytes": 23009,
+      "images": 10
+    }
+  ],
+  "renderedBlocks": 1276
 }
