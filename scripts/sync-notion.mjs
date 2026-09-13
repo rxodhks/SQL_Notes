@@ -24,7 +24,6 @@ const notion = new Client({
 const generatedFiles = new Set();
 const pageById = new Map();
 const blockChildrenCache = new Map();
-const pageTitleCache = new Map();
 let lastNotionRequestAt = 0;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -86,6 +85,17 @@ function propertyText(property) {
       .join("");
   }
   return "";
+}
+
+function pageTitle(page, fallback = "Untitled") {
+  if (!page || page.object !== "page" || !("properties" in page)) return fallback;
+  for (const property of Object.values(page.properties)) {
+    if (property?.type === "title") {
+      const title = propertyText(property);
+      if (title) return title;
+    }
+  }
+  return fallback;
 }
 
 function propertyUrl(property) {
@@ -183,6 +193,62 @@ async function queryPublishedRoots() {
   return roots;
 }
 
+async function listAccessiblePages() {
+  const pages = [];
+  let startCursor;
+
+  do {
+    const response = await notionRequest("Search accessible Notion pages", () =>
+      notion.search({
+        filter: { property: "object", value: "page" },
+        page_size: 100,
+        ...(startCursor ? { start_cursor: startCursor } : {}),
+      }),
+    );
+
+    for (const item of response.results) {
+      if (item.object === "page") pages.push(item);
+    }
+    startCursor = response.has_more ? response.next_cursor : undefined;
+  } while (startCursor);
+
+  return pages;
+}
+
+function buildPageIndexes(pages) {
+  const pageIndex = new Map();
+  const childrenByParent = new Map();
+
+  for (const page of pages) {
+    const pageKey = canonicalId(page.id);
+    pageIndex.set(pageKey, page);
+
+    if (page.parent?.type !== "page_id") continue;
+    const parentKey = canonicalId(page.parent.page_id);
+    const children = childrenByParent.get(parentKey) ?? [];
+    children.push(page);
+    childrenByParent.set(parentKey, children);
+  }
+
+  for (const children of childrenByParent.values()) {
+    children.sort((a, b) => pageTitle(a).localeCompare(pageTitle(b), "ko"));
+  }
+
+  return { pageIndex, childrenByParent };
+}
+
+async function ensureRootPages(roots, pageIndex) {
+  for (const root of roots) {
+    const key = canonicalId(root.pageId);
+    if (pageIndex.has(key)) continue;
+
+    const page = await notionRequest(`Read root page ${root.pageId}`, () =>
+      notion.pages.retrieve({ page_id: root.pageId }),
+    );
+    if (page.object === "page") pageIndex.set(key, page);
+  }
+}
+
 async function listChildren(blockId) {
   const key = canonicalId(blockId);
   if (blockChildrenCache.has(key)) return blockChildrenCache.get(key);
@@ -215,48 +281,6 @@ async function listChildren(blockId) {
   }
 }
 
-async function getPageTitle(pageId, fallback = "Untitled") {
-  const key = canonicalId(pageId);
-  if (pageTitleCache.has(key)) return pageTitleCache.get(key);
-
-  const page = await notionRequest(`Read page ${pageId}`, () =>
-    notion.pages.retrieve({ page_id: pageId }),
-  );
-  let title = fallback;
-
-  if (page.object === "page" && "properties" in page) {
-    for (const property of Object.values(page.properties)) {
-      if (property?.type === "title") {
-        title = propertyText(property) || fallback;
-        break;
-      }
-    }
-  }
-
-  pageTitleCache.set(key, title);
-  return title;
-}
-
-async function findChildPages(blockId) {
-  const blocks = await listChildren(blockId);
-  const found = [];
-
-  for (const block of blocks) {
-    if (!("type" in block)) continue;
-
-    if (block.type === "child_page") {
-      found.push({ id: block.id, title: block.child_page?.title ?? "Untitled" });
-      continue;
-    }
-
-    if (block.has_children) {
-      found.push(...(await findChildPages(block.id)));
-    }
-  }
-
-  return found;
-}
-
 function childBaseDir(filePath) {
   if (path.posix.basename(filePath).toLowerCase() === "readme.md") {
     return path.posix.dirname(filePath);
@@ -264,51 +288,47 @@ function childBaseDir(filePath) {
   return filePath.replace(/\.md$/i, "");
 }
 
-async function buildPageTree(
+function buildPageTree(
   pageId,
   filePath,
   titleHint,
+  pageIndex,
+  childrenByParent,
   ancestry = new Set(),
-  retrieveTitle = true,
 ) {
   const idKey = canonicalId(pageId);
   if (ancestry.has(idKey)) {
     throw new Error(`Cycle detected while traversing Notion page ${pageId}`);
   }
 
-  const title = retrieveTitle
-    ? await getPageTitle(pageId, titleHint)
-    : titleHint || "Untitled";
+  const page = pageIndex.get(idKey);
+  const title = pageTitle(page, titleHint || "Untitled");
   const node = { id: pageId, title, filePath, children: [] };
   pageById.set(idKey, node);
 
   const nextAncestry = new Set(ancestry);
   nextAncestry.add(idKey);
-
-  const childPages = await findChildPages(pageId);
-  const seen = new Set();
   const usedSlugs = new Set();
   const baseDir = childBaseDir(filePath);
 
-  for (const child of childPages) {
-    const childKey = canonicalId(child.id);
-    if (seen.has(childKey)) continue;
-    seen.add(childKey);
-
-    const childTitle = child.title || "Untitled";
+  for (const childPage of childrenByParent.get(idKey) ?? []) {
+    const childKey = canonicalId(childPage.id);
+    const childTitle = pageTitle(childPage);
     let slug = slugify(childTitle, childKey.slice(0, 8));
     if (usedSlugs.has(slug)) slug = `${slug}-${childKey.slice(0, 6)}`;
     usedSlugs.add(slug);
 
     const childFilePath = safeRepoPath(path.posix.join(baseDir, `${slug}.md`));
-    const childNode = await buildPageTree(
-      child.id,
-      childFilePath,
-      childTitle,
-      nextAncestry,
-      false,
+    node.children.push(
+      buildPageTree(
+        childPage.id,
+        childFilePath,
+        childTitle,
+        pageIndex,
+        childrenByParent,
+        nextAncestry,
+      ),
     );
-    node.children.push(childNode);
   }
 
   return node;
@@ -634,13 +654,24 @@ async function main() {
   const previousFiles = await readPreviousManifestFiles();
   const roots = await queryPublishedRoots();
 
-  const rootNodes = [];
-  for (const root of roots) {
+  console.log("Indexing pages visible to the Notion integration...");
+  const accessiblePages = await listAccessiblePages();
+  const { pageIndex, childrenByParent } = buildPageIndexes(accessiblePages);
+  await ensureRootPages(roots, pageIndex);
+
+  const rootNodes = roots.map((root) => {
     console.log(`Discovering: ${root.name} -> ${root.filePath}`);
-    rootNodes.push(
-      await buildPageTree(root.pageId, root.filePath, root.name),
+    return buildPageTree(
+      root.pageId,
+      root.filePath,
+      root.name,
+      pageIndex,
+      childrenByParent,
     );
-  }
+  });
+
+  const discoveredPageCount = pageById.size;
+  console.log(`Discovered ${discoveredPageCount} Notion page(s) under published roots.`);
 
   for (const node of rootNodes) {
     console.log(`Rendering: ${node.title}`);
