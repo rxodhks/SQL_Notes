@@ -362,6 +362,8 @@ async function renderBlock(block, currentFile, pageNode, state) {
       return `## ${richTextToMarkdown(value.rich_text)}`;
     case "heading_3":
       return `### ${richTextToMarkdown(value.rich_text)}`;
+    case "heading_4":
+      return `#### ${richTextToMarkdown(value.rich_text)}`;
     case "bulleted_list_item": {
       const own = `- ${richTextToMarkdown(value.rich_text)}`;
       const nested = await renderNestedChildren(block, currentFile, pageNode, state);
