@@ -1,0 +1,16 @@
+{
+  "name": "sql-notes-notion-sync",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Automatically sync Notion SQL notes to GitHub Markdown.",
+  "scripts": {
+    "sync": "node scripts/sync-notion.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@notionhq/client": "5.26.0"
+  }
+}
