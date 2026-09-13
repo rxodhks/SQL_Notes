@@ -542,7 +542,7 @@ DBMS에서 수행되는 **SQL이 모두 완성된 SQL은 아니며,**
 > <summary>오라클에서 세크먼트에 할당된 익스텐트 목록을 조회하는 방법</summary>
 > 
 > ```sql
-> SELECT segment_type, tablespace_name, extent_id, field_id, block_id, blocks
+> SELECT segment_type, tablespace_name, extent_id, file_id, block_id, blocks
 > FROM dba_extents
 > WHERE owner = USER
 > and segment_name = 'MY_SEGMENT'
