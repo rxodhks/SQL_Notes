@@ -21,6 +21,11 @@ for (let level = 1; level <= 4; level++) {
 test('unknown blocks fail even with children', async () => {
   await assert.rejects(renderBlock({id:'unknown',type:'future_block',has_children:true},'',{},{}), /Unsupported/);
 });
+test('callouts probe children even when the flag is false', async () => {
+  blockChildrenCache.set('callout', Promise.resolve([{id:'body', type:'paragraph', paragraph:{rich_text:rich('summary body')}}]));
+  const text = await renderBlock({id:'callout',type:'callout',has_children:false,callout:{rich_text:rich('summary')}},'sql/tuning/README.md',{},{});
+  assert.ok(text.includes('summary body'));
+});
 test('large loss blocks publication; additions pass', () => {
   assert.throws(()=>assertSafeReplacement('a'.repeat(1000),'a'.repeat(100),'note'),/shrank/);
   assert.doesNotThrow(()=>assertSafeReplacement('a'.repeat(1000),'a'.repeat(1200),'note'));

@@ -492,8 +492,12 @@ function fileLikeUrl(value) {
 }
 
 async function renderNestedChildren(block, currentFile, pageNode, state) {
-  if (!block.has_children) return "";
-  return renderBlocks(await listChildren(block.id), currentFile, pageNode, state);
+  // Probe callouts explicitly: the source comparison found populated callouts
+  // whose API response did not advertise children.
+  if (!block.has_children && block.type !== "callout") return "";
+  const children = await listChildren(block.id);
+  if (block.type === "callout") console.log(`Callout ${block.id}: advertised=${block.has_children}, children=${children.length}`);
+  return renderBlocks(children, currentFile, pageNode, state);
 }
 
 async function renderBlock(block, currentFile, pageNode, state) {
