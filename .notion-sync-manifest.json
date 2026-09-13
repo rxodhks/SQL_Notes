@@ -15,8 +15,10 @@
     "assets/3c74a637425a80f38000d9f9d5d7082c/008-테이블스페이스-erd.png",
     "assets/3c74a637425a80f38000d9f9d5d7082c/009-notion-image.png",
     "assets/3c74a637425a80f38000d9f9d5d7082c/010-emp_pk-인덱스의-리프-노드에-그어진-굵은-화살표가-시퀀셜-액세스에-해.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/010-emp_pk-인덱스의-리프-노드에-그어진-굵은-화살표가-시퀀셜-액세스에-해당한다.-emp-테이블에-그어진-굵은-화살표는-full-table-scan에-해당한다.png",
     "assets/3c74a637425a80f38000d9f9d5d7082c/010-emp_pk-인덱스의-리프-노드에-그어진-굵은-화살표가-시퀀셜-액세스에-해당한다.png",
     "assets/3c74a637425a80f38000d9f9d5d7082c/010-notion-image.png",
+    "assets/3c74a637425a80f38000d9f9d5d7082c/011-점선-화살표가-랜덤-액세스에-해당한다.png",
     "sql/basic/README.md",
     "sql/basic/char와-varchar-유형의-차이.md",
     "sql/tuning/README.md"
@@ -37,11 +39,11 @@
     {
       "id": "3c74a637425a80f38000d9f9d5d7082c",
       "file": "sql/tuning/README.md",
-      "bytes": 25892,
-      "images": 10
+      "bytes": 29337,
+      "images": 11
     }
   ],
-  "renderedBlocks": 1284,
+  "renderedBlocks": 1307,
   "recoveryCopiesUsed": [
     "3da4a637-425a-8025-b3f7-eb964d60bae7",
     "3da4a637-425a-8017-9518-cb63500e3cec"
